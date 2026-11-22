@@ -1,0 +1,188 @@
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101827">
+<title>ExpertOption Analyzer</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b1220;color:#eef3ff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+header{padding:22px 17px;background:#111c2e;border-bottom:1px solid #26364d}
+h1{font-size:23px;margin:0 0 7px}
+.sub{font-size:12px;color:#9eafc8}
+main{padding:15px;max-width:700px;margin:auto}
+.notice{background:#392b13;color:#ffd98a;border:1px solid #75551d;padding:12px;border-radius:12px;font-size:12px;line-height:1.7;margin-bottom:14px}
+.panel{background:#121e30;border:1px solid #26364d;border-radius:15px;padding:15px;margin-bottom:14px}
+label{display:block;color:#aabbd2;font-size:12px;margin-bottom:8px}
+select,button{font:inherit;border-radius:10px;padding:12px;border:1px solid #354963;background:#1b2b42;color:white}
+select{width:100%;margin-bottom:12px}
+button{cursor:pointer}
+.primary{background:#1769d2;border:0;width:100%;font-weight:bold}
+.secondary{background:#263850}
+.price{font-size:30px;font-weight:800;direction:ltr;text-align:center;margin:13px}
+.muted{color:#9eafc8;font-size:12px;text-align:center}
+.signal{font-size:25px;font-weight:900;text-align:center;padding:15px;border-radius:12px;background:#1b2b42;margin:12px 0}
+.call{color:#42df9b}.put{color:#ff737d}.wait{color:#ffd477}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.metric{background:#1a2a40;border-radius:10px;padding:11px;text-align:center}
+.metric b{display:block;font-size:17px;margin-top:6px;direction:ltr}
+.metric span{font-size:11px;color:#aabbd2}
+.row{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid #26364d;font-size:13px}
+.row:last-child{border:0}
+.small{font-size:11px;color:#9eafc8;line-height:1.7}
+.history{max-height:260px;overflow:auto}
+.actions{display:flex;gap:8px;margin-top:10px}
+.actions button{flex:1;font-size:12px}
+footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
+</style>
+</head>
+<body>
+<header>
+<h1>ExpertOption Analyzer</h1>
+<div class="sub">محرك التحليل الفني — الإصدار التجريبي الأول</div>
+</header>
+<main>
+<div class="notice">وضع المحاكاة: الأسعار والإشارات هنا تجريبية مولّدة داخل التطبيق، وليست أسعار ExpertOption أو OTC مباشرة. لا توجد صفقات حقيقية.</div>
+
+<section class="panel">
+<label>اختر الأصل</label>
+<select id="asset">
+<option value="Gold">Gold (OTC) — الذهب</option>
+<option value="EURUSD">EUR/USD</option>
+<option value="GBPUSD">GBP/USD</option>
+<option value="USDJPY">USD/JPY</option>
+<option value="USDCHF">USD/CHF</option>
+<option value="AUDUSD">AUD/USD</option>
+<option value="Silver">Silver (OTC) — الفضة</option>
+<option value="Brent">Brent Oil</option>
+<option value="US30">US30</option>
+<option value="NAS100">NAS100</option>
+<option value="SPX500">SPX500</option>
+<option value="DAX40">DAX40</option>
+</select>
+<div class="muted">السعر التجريبي الحالي</div>
+<div class="price" id="price">—</div>
+<div class="muted" id="updated">بانتظار بدء المحاكاة</div>
+</section>
+
+<section class="panel">
+<div class="metrics">
+<div class="metric"><span>EMA 5</span><b id="ema5">—</b></div>
+<div class="metric"><span>EMA 13</span><b id="ema13">—</b></div>
+<div class="metric"><span>RSI 7</span><b id="rsi">—</b></div>
+</div>
+<div class="row"><span>الزخم Momentum</span><b id="momentum">—</b></div>
+<div class="row"><span>اتجاه التحليل</span><b id="trend">—</b></div>
+</section>
+
+<section class="panel">
+<label>نتيجة المحرك</label>
+<div class="signal wait" id="signal">WAIT — انتظار</div>
+<div class="muted" id="reason">ابدأ المحاكاة لعرض التحليل</div>
+<div class="row"><span>قوة توافق المؤشرات</span><b id="strength">—</b></div>
+<button class="primary" id="start">بدء المحاكاة</button>
+<div class="actions">
+<button class="secondary" id="once">تحديث تحليل</button>
+<button class="secondary" id="stop">إيقاف</button>
+</div>
+</section>
+
+<section class="panel">
+<h3>سجل الإشارات التجريبية</h3>
+<div class="metrics">
+<div class="metric"><span>الإجمالي</span><b id="total">0</b></div>
+<div class="metric"><span>CALL</span><b id="calls">0</b></div>
+<div class="metric"><span>PUT</span><b id="puts">0</b></div>
+</div>
+<div class="history" id="history"><p class="muted">لا توجد إشارات مسجلة بعد</p></div>
+<div class="actions">
+<button class="secondary" id="export">تصدير CSV</button>
+<button class="secondary" id="clear">مسح السجل</button>
+</div>
+</section>
+<footer>ExpertOption Analyzer · Demo only · لا ينفذ صفقات</footer>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const configs={
+Gold:[2350,2],EURUSD:[1.08,.0005],GBPUSD:[1.27,.0006],
+USDJPY:[150,.08],USDCHF:[.89,.0005],AUDUSD:[.66,.0005],
+Silver:[28,.04],Brent:[80,.15],US30:[39000,8],
+NAS100:[18000,6],SPX500:[5200,2],DAX40:[18500,7]
+};
+let prices=[],current=0,timer=null,history=[];
+function seed(){
+let base=configs[$("asset").value][0];
+prices=Array.from({length:40},(_,i)=>base+(Math.random()-.5)*base*.001);
+current=prices.at(-1);
+}
+function ema(data,period){
+let k=2/(period+1),v=data[0];
+for(let i=1;i<data.length;i++)v=data[i]*k+v*(1-k);
+return v;
+}
+function rsi(data,period=7){
+let gains=0,losses=0;
+for(let i=data.length-period;i<data.length;i++){
+let d=data[i]-data[i-1];
+if(d>0)gains+=d;else losses-=d;
+}
+if(losses===0)return 100;
+return 100-(100/(1+gains/losses));
+}
+function fmt(v){
+let n=$("asset").value;
+return v.toFixed(["EURUSD","GBPUSD","USDCHF","AUDUSD"].includes(n)?5:
+n==="USDJPY"?3:n==="Gold"||n==="Silver"||n==="Brent"?3:2);
+}
+function analyze(){
+let base=configs[$("asset").value],change=(Math.random()-.48)*base[1];
+current+=change;prices.push(current);if(prices.length>80)prices.shift();
+let e5=ema(prices.slice(-30),5),e13=ema(prices.slice(-40),13);
+let rv=rsi(prices),mom=prices.at(-1)-prices.at(-4);
+let up=e5>e13&&mom>0,down=e5<e13&&mom<0;
+let strength=(up||down)?Math.min(95,65+Math.round(Math.abs(mom)/base[1]*10)):50;
+let sig=up&&rv>50&&rv<75?"CALL":down&&rv<50&&rv>25?"PUT":"WAIT";
+$("price").textContent=fmt(current);
+$("ema5").textContent=fmt(e5);
+$("ema13").textContent=fmt(e13);
+$("rsi").textContent=rv.toFixed(1);
+$("momentum").textContent=mom>0?"إيجابي":"سلبي";
+$("trend").textContent=up?"صاعد":down?"هابط":"متذبذب";
+$("signal").textContent=sig==="CALL"?"CALL — صعود":sig==="PUT"?"PUT — هبوط":"WAIT — انتظار";
+$("signal").className="signal "+sig.toLowerCase();
+$("strength").textContent=strength+"%";
+$("reason").textContent=sig==="WAIT"?"الشروط غير مكتملة — لا توجد إشارة":"توافق EMA والزخم وRSI؛ إشارة تجريبية فقط";
+$("updated").textContent="آخر تحديث: "+new Date().toLocaleTimeString("ar-SA");
+if(sig!=="WAIT")addSignal(sig,strength);
+}
+function addSignal(sig,strength){
+let last=history[0];
+if(last&&last.asset===$("asset").value&&last.signal===sig&&Date.now()-last.time<30000)return;
+history.unshift({asset:$("asset").value,signal:sig,strength,time:Date.now()});
+render();
+}
+function render(){
+$("total").textContent=history.length;
+$("calls").textContent=history.filter(x=>x.signal==="CALL").length;
+$("puts").textContent=history.filter(x=>x.signal==="PUT").length;
+$("history").innerHTML=history.length?history.slice(0,40).map(x=>
+`<div class="row"><span>${x.asset} · ${x.signal}</span><span>${x.strength}% · ${new Date(x.time).toLocaleTimeString("ar-SA")}</span></div>`
+).join(""):'<p class="muted">لا توجد إشارات مسجلة بعد</p>';
+}
+$("asset").onchange=()=>{seed();analyze()};
+$("once").onclick=()=>analyze();
+$("start").onclick=()=>{if(timer)return;seed();analyze();timer=setInterval(analyze,5000)};
+$("stop").onclick=()=>{clearInterval(timer);timer=null};
+$("clear").onclick=()=>{history=[];render()};
+$("export").onclick=()=>{
+let rows=["Asset,Signal,Strength,Time",...history.map(x=>[x.asset,x.signal,x.strength,new Date(x.time).toISOString()].join(","))];
+let blob=new Blob(["\uFEFF"+rows.join("\n")],{type:"text/csv;charset=utf-8"});
+let a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="expertoption-demo-signals.csv";a.click();URL.revokeObjectURL(a.href);
+};
+seed();analyze();
+</script>
+</body>
+</html>
