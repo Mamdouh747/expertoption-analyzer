@@ -96,6 +96,19 @@ footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
 <div class="metric"><span>CALL</span><b id="calls">0</b></div>
 <div class="metric"><span>PUT</span><b id="puts">0</b></div>
 </div>
+<h4>تقييم 5 ثوانٍ</h4>
+<div class="metrics">
+<div class="metric"><span>ناجحة</span><b id="win5">0</b></div>
+<div class="metric"><span>خاسرة</span><b id="loss5">0</b></div>
+<div class="metric"><span>نسبة النجاح</span><b id="rate5">—</b></div>
+</div>
+<h4>تقييم 30 ثانية</h4>
+<div class="metrics">
+<div class="metric"><span>ناجحة</span><b id="win30">0</b></div>
+<div class="metric"><span>خاسرة</span><b id="loss30">0</b></div>
+<div class="metric"><span>نسبة النجاح</span><b id="rate30">—</b></div>
+</div>
+<div class="small">تُقاس النتيجة من حركة السعر التجريبي المسجلة بعد كل مدة. هذه محاكاة وليست أسعار المنصة.</div>
 <div class="history" id="history"><p class="muted">لا توجد إشارات مسجلة بعد</p></div>
 <div class="actions">
 <button class="secondary" id="export">تصدير CSV</button>
@@ -112,7 +125,7 @@ USDJPY:[150,.08],USDCHF:[.89,.0005],AUDUSD:[.66,.0005],
 Silver:[28,.04],Brent:[80,.15],US30:[39000,8],
 NAS100:[18000,6],SPX500:[5200,2],DAX40:[18500,7]
 };
-let prices=[],current=0,timer=null,history=[];
+let prices=[],current=0,timer=null,history=[],priceSnapshots={};
 function seed(){
 let base=configs[$("asset").value][0];
 prices=Array.from({length:40},(_,i)=>base+(Math.random()-.5)*base*.001);
@@ -156,20 +169,49 @@ $("signal").className="signal "+sig.toLowerCase();
 $("strength").textContent=strength+"%";
 $("reason").textContent=sig==="WAIT"?"الشروط غير مكتملة — لا توجد إشارة":"توافق EMA والزخم وRSI؛ إشارة تجريبية فقط";
 $("updated").textContent="آخر تحديث: "+new Date().toLocaleTimeString("ar-SA");
+const asset=$("asset").value;
+(priceSnapshots[asset]??=[]).push({time:Date.now(),price:current});
+if(priceSnapshots[asset].length>300)priceSnapshots[asset].shift();
 if(sig!=="WAIT")addSignal(sig,strength);
+evaluateSignals();
+render();
 }
 function addSignal(sig,strength){
 let last=history[0];
 if(last&&last.asset===$("asset").value&&last.signal===sig&&Date.now()-last.time<30000)return;
-history.unshift({asset:$("asset").value,signal:sig,strength,time:Date.now()});
+history.unshift({asset:$("asset").value,signal:sig,strength,time:Date.now(),entryPrice:current,result5:null,result30:null});
 render();
+}
+function evaluateSignals(){
+history.forEach(x=>{
+const path=priceSnapshots[x.asset]||[];
+for(const seconds of [5,30]){
+const key=seconds===5?"result5":"result30";
+if(x[key]!==null)continue;
+const point=path.find(p=>p.time>=x.time+seconds*1000);
+if(!point)continue;
+if(point.price===x.entryPrice)x[key]="تعادل";
+else {
+const won=x.signal==="CALL"?point.price>x.entryPrice:point.price<x.entryPrice;
+x[key]=won?"ناجحة":"خاسرة";
+}
+}
+});
 }
 function render(){
 $("total").textContent=history.length;
 $("calls").textContent=history.filter(x=>x.signal==="CALL").length;
 $("puts").textContent=history.filter(x=>x.signal==="PUT").length;
+const stats=key=>{
+const done=history.filter(x=>x[key]==="ناجحة"||x[key]==="خاسرة");
+const wins=done.filter(x=>x[key]==="ناجحة").length;
+return {wins,losses:done.length-wins,rate:done.length?(wins/done.length*100).toFixed(1)+"%":"—"};
+};
+const a=stats("result5"),b=stats("result30");
+$("win5").textContent=a.wins;$("loss5").textContent=a.losses;$("rate5").textContent=a.rate;
+$("win30").textContent=b.wins;$("loss30").textContent=b.losses;$("rate30").textContent=b.rate;
 $("history").innerHTML=history.length?history.slice(0,40).map(x=>
-`<div class="row"><span>${x.asset} · ${x.signal}</span><span>${x.strength}% · ${new Date(x.time).toLocaleTimeString("ar-SA")}</span></div>`
+`<div class="row"><span>${x.asset} · ${x.signal}<br><small>5 ث: ${x.result5||"قيد الانتظار"} | 30 ث: ${x.result30||"قيد الانتظار"}</small></span><span>${x.strength}% · ${new Date(x.time).toLocaleTimeString("ar-SA")}</span></div>`
 ).join(""):'<p class="muted">لا توجد إشارات مسجلة بعد</p>';
 }
 $("asset").onchange=()=>{seed();analyze()};
@@ -178,7 +220,7 @@ $("start").onclick=()=>{if(timer)return;seed();analyze();timer=setInterval(analy
 $("stop").onclick=()=>{clearInterval(timer);timer=null};
 $("clear").onclick=()=>{history=[];render()};
 $("export").onclick=()=>{
-let rows=["Asset,Signal,Strength,Time",...history.map(x=>[x.asset,x.signal,x.strength,new Date(x.time).toISOString()].join(","))];
+let rows=["Asset,Signal,Strength,EntryPrice,Result_5s,Result_30s,Time",...history.map(x=>[x.asset,x.signal,x.strength,x.entryPrice,x.result5||"Pending",x.result30||"Pending",new Date(x.time).toISOString()].join(","))];
 let blob=new Blob(["\uFEFF"+rows.join("\n")],{type:"text/csv;charset=utf-8"});
 let a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="expertoption-demo-signals.csv";a.click();URL.revokeObjectURL(a.href);
 };
