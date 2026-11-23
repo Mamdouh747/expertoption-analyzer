@@ -81,7 +81,7 @@ footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
 <label>نتيجة المحرك</label>
 <div class="signal wait" id="signal">WAIT — انتظار</div>
 <div class="muted" id="reason">ابدأ المحاكاة لعرض التحليل</div>
-<div class="row"><span>قوة توافق المؤشرات</span><b id="strength">—</b></div>
+<div class="row"><span>مؤشر توافق الشروط</span><b id="strength">—</b></div>
 <button class="primary" id="start">بدء المحاكاة</button>
 <div class="actions">
 <button class="secondary" id="once">تحديث تحليل</button>
@@ -108,7 +108,7 @@ footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
 <div class="metric"><span>خاسرة</span><b id="loss30">0</b></div>
 <div class="metric"><span>نسبة النجاح</span><b id="rate30">—</b></div>
 </div>
-<div class="small">تُقاس النتيجة من حركة السعر التجريبي المسجلة بعد كل مدة. هذه محاكاة وليست أسعار المنصة.</div>
+<div class="small">لا تدخل إشارة إلا عند توافق 80/100 على الأقل. بعد 3 خسائر متتالية أو 3 خسائر خلال 24 ساعة يتوقف إصدار الإشارات. الأسعار ما زالت محاكاة وليست أسعار المنصة؛ هذا المؤشر ليس احتمال ربح.</div>
 <div class="history" id="history"><p class="muted">لا توجد إشارات مسجلة بعد</p></div>
 <div class="actions">
 <button class="secondary" id="export">تصدير CSV</button>
@@ -156,8 +156,22 @@ current+=change;prices.push(current);if(prices.length>80)prices.shift();
 let e5=ema(prices.slice(-30),5),e13=ema(prices.slice(-40),13);
 let rv=rsi(prices),mom=prices.at(-1)-prices.at(-4);
 let up=e5>e13&&mom>0,down=e5<e13&&mom<0;
-let strength=(up||down)?Math.min(95,65+Math.round(Math.abs(mom)/base[1]*10)):50;
-let sig=up&&rv>50&&rv<75?"CALL":down&&rv<50&&rv>25?"PUT":"WAIT";
+const recent=prices.slice(-7),diffs=recent.slice(1).map((v,i)=>v-recent[i]);
+const upBars=diffs.filter(v=>v>0).length,downBars=diffs.filter(v=>v<0).length;
+const avgMove=diffs.reduce((sum,v)=>sum+Math.abs(v),0)/(diffs.length||1);
+const volatilityRatio=avgMove>0?Math.abs(mom)/(avgMove*3):0;
+const bullish=up&&rv>=55&&rv<=67&&mom>0;
+const bearish=down&&rv>=33&&rv<=45&&mom<0;
+const persistence=(bullish&&upBars>=5)||(bearish&&downBars>=5);
+const separation=avgMove>0&&Math.abs(e5-e13)>=avgMove*.35;
+const volatilityOk=volatilityRatio>=.35&&volatilityRatio<=2.5;
+const strength=(e5!==e13?20:0)+(((bullish&&rv>=55&&rv<=67)||(bearish&&rv>=33&&rv<=45))?20:0)+(((bullish&&mom>0)||(bearish&&mom<0))?20:0)+(persistence?20:0)+(separation&&volatilityOk?20:0);
+const candidate=bullish?"CALL":bearish?"PUT":"WAIT";
+let sig=candidate!=="WAIT"&&strength>=80?candidate:"WAIT";
+const recentSettled=history.filter(x=>x.result30==="ناجحة"||x.result30==="خاسرة").sort((a,b)=>b.time-a.time);
+let lossStreak=0;for(const x of recentSettled){if(x.result30==="خاسرة")lossStreak++;else break;}
+const lossesToday=recentSettled.filter(x=>x.result30==="خاسرة"&&Date.now()-x.time<86400000).length;
+if(lossStreak>=3||lossesToday>=3)sig="WAIT";
 $("price").textContent=fmt(current);
 $("ema5").textContent=fmt(e5);
 $("ema13").textContent=fmt(e13);
@@ -167,7 +181,7 @@ $("trend").textContent=up?"صاعد":down?"هابط":"متذبذب";
 $("signal").textContent=sig==="CALL"?"CALL — صعود":sig==="PUT"?"PUT — هبوط":"WAIT — انتظار";
 $("signal").className="signal "+sig.toLowerCase();
 $("strength").textContent=strength+"%";
-$("reason").textContent=sig==="WAIT"?"الشروط غير مكتملة — لا توجد إشارة":"توافق EMA والزخم وRSI؛ إشارة تجريبية فقط";
+$("reason").textContent=sig==="WAIT"?"الشروط غير مكتملة أو توقف وقائي — لا توجد إشارة":"توافق EMA والزخم وRSI؛ إشارة تجريبية فقط";
 $("updated").textContent="آخر تحديث: "+new Date().toLocaleTimeString("ar-SA");
 const asset=$("asset").value;
 (priceSnapshots[asset]??=[]).push({time:Date.now(),price:current});
