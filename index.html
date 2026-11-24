@@ -166,7 +166,7 @@ function analyze(){
  const down=e5<e13&&mom<0&&slope<0;
  const raw=up&&rv>=52&&rv<=68?"CALL":
             down&&rv>=32&&rv<=48?"PUT":"WAIT";
- const strength=raw==="WAIT"?0:Math.min(94,65+Math.round(separation*8+momentumScore*5));
+ const strength=raw==="WAIT"?0:Math.min(94,60+Math.round(Math.min(18,separation*180)+Math.min(16,momentumScore*70)));
  const valid=raw!=="WAIT"&&strength>=MIN_STRENGTH;
  const sig=valid?raw:"WAIT";
  $("price").textContent=fmt(current);
