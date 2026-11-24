@@ -82,6 +82,7 @@ footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
 <div class="signal wait" id="signal">WAIT — انتظار</div>
 <div class="muted" id="reason">ابدأ المحاكاة لعرض التحليل</div>
 <div class="row"><span>قوة توافق المؤشرات</span><b id="strength">—</b></div>
+<div class="muted" id="runStatus" style="margin:8px 0;color:#ffd477">المحاكاة متوقفة</div>
 <button class="primary" id="start">بدء المحاكاة</button>
 <div class="actions">
 <button class="secondary" id="once">تحديث تحليل</button>
@@ -126,13 +127,13 @@ Silver:[28,.04],Brent:[80,.15],US30:[39000,8],
 NAS100:[18000,6],SPX500:[5200,2],DAX40:[18500,7]
 };
 let prices=[],current=0,timer=null,history=[],priceSnapshots={};
-let pendingSignal=null,lastSignalAt=0,lastDirection=null;
+let pendingSignal=null,pendingCount=0,lastSignalAt=0;
 const COOLDOWN_MS=30000, MIN_STRENGTH=70;
 function seed(){
  const base=configs[$("asset").value][0];
  prices=Array.from({length:40},(_,i)=>base+(Math.random()-.5)*base*.001);
  current=prices.at(-1);
- pendingSignal=null;lastDirection=null;
+ pendingSignal=null;pendingCount=0;
 }
 function ema(data,period){
  const k=2/(period+1);let v=data[0];
@@ -183,14 +184,13 @@ function analyze(){
  const asset=$("asset").value,now=Date.now();
  (priceSnapshots[asset]??=[]).push({time:now,price:current});
  if(priceSnapshots[asset].length>500)priceSnapshots[asset].shift();
- if(sig==="WAIT"){pendingSignal=null;lastDirection=null;}
+ if(sig==="WAIT"){pendingSignal=null;pendingCount=0;}
  else {
-  if(pendingSignal===sig){
-   if(!lastDirection)lastDirection=sig;
-   else if(now-lastSignalAt>=COOLDOWN_MS){
-    addSignal(sig,strength);lastSignalAt=now;pendingSignal=null;lastDirection=null;
-   }
-  } else {pendingSignal=sig;lastDirection=sig;}
+  if(pendingSignal===sig)pendingCount++;
+  else {pendingSignal=sig;pendingCount=1;}
+  if(pendingCount>=2&&now-lastSignalAt>=COOLDOWN_MS){
+   addSignal(sig,strength);lastSignalAt=now;pendingCount=0;
+  }
  }
  evaluateSignals();render();
 }
@@ -231,10 +231,24 @@ function render(){
   '<div class="row"><span>'+x.asset+' · '+x.signal+'<br><small>5 ث: '+(x.result5||"قيد الانتظار")+' | 30 ث: '+(x.result30||"قيد الانتظار")+'</small></span><span>'+x.strength+'% · '+new Date(x.time).toLocaleTimeString("ar-SA")+'</span></div>'
  ).join(""):'<p class="muted">لا توجد إشارات مسجلة بعد</p>';
 }
+function setRunState(running){
+ $("runStatus").textContent=running?"المحاكاة تعمل — تحديث كل 5 ثوانٍ":"المحاكاة متوقفة";
+ $("runStatus").style.color=running?"#42df9b":"#ffd477";
+ $("start").textContent=running?"المحاكاة تعمل":"بدء المحاكاة";
+ $("start").disabled=running;
+}
 $("asset").onchange=()=>{seed();analyze()};
 $("once").onclick=()=>analyze();
-$("start").onclick=()=>{if(timer)return;seed();analyze();timer=setInterval(analyze,5000)};
-$("stop").onclick=()=>{clearInterval(timer);timer=null};
+$("start").onclick=()=>{
+ if(timer)return;
+ seed();analyze();
+ timer=setInterval(analyze,5000);
+ setRunState(true);
+};
+$("stop").onclick=()=>{
+ if(timer){clearInterval(timer);timer=null;}
+ setRunState(false);
+};
 $("clear").onclick=()=>{history=[];render()};
 $("export").onclick=()=>{
  const rows=["Asset,Signal,Strength,EntryPrice,Result_5s,Result_30s,Time",
@@ -243,7 +257,7 @@ $("export").onclick=()=>{
  const a=document.createElement("a");a.href=URL.createObjectURL(blob);
  a.download="expertoption-demo-signals.csv";a.click();URL.revokeObjectURL(a.href);
 };
-seed();analyze();
+seed();analyze();setRunState(false);
 </script>
 </body>
 </html>
