@@ -228,8 +228,8 @@ function render(){
  $("win5").textContent=a.wins;$("loss5").textContent=a.losses;$("rate5").textContent=a.rate;
  $("win30").textContent=b.wins;$("loss30").textContent=b.losses;$("rate30").textContent=b.rate;
  $("history").innerHTML=history.length?history.slice(0,40).map(x=>
-  \`<div class="row"><span>\${x.asset} · \${x.signal}<br><small>5 ث: \${x.result5||"قيد الانتظار"} | 30 ث: \${x.result30||"قيد الانتظار"}</small></span><span>\${x.strength}% · \${new Date(x.time).toLocaleTimeString("ar-SA")}</span></div>\`
- ).join(""):'<p class="muted">لا توجد إشارات مسجلة بعد</p>';
+  '<div class="row"><span>'+x.asset+' · '+x.signal+'<br><small>5 ث: '+(x.result5||"قيد الانتظار")+' | 30 ث: '+(x.result30||"قيد الانتظار")+'</small></span><span>'+x.strength+'% · '+new Date(x.time).toLocaleTimeString("ar-SA")+'</span></div>'
+ ).join("")'<p class="muted">لا توجد إشارات مسجلة بعد</p>';
 }
 $("asset").onchange=()=>{seed();analyze()};
 $("once").onclick=()=>analyze();
