@@ -46,13 +46,13 @@ footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
 <div class="sub">محرك التحليل الفني — إصدار الفلترة والتأكيد</div>
 </header>
 <main>
-<div class="notice">وضع OTC: لا يتم توليد أسعار تجريبية. المحرك لا يصدر إشارات إلا بعد استقبال سعر حديث من مصدر خارجي والتحقق من الرمز والتوقيت. اتصال WebSocket لا يثبت وحده أن الأسعار OTC أو مطابقة للمنصة. لا توجد صفقات حقيقية.</div>
+<div class="notice">مصدر الأسعار الحالي: Twelve Data للسوق الحقيقي فقط، وليس OTC الخاص بـ ExpertOption. لا يصدر المحرك إشارات قبل استقبال أسعار حديثة والتحقق من الرمز والتوقيت. لا توجد صفقات حقيقية.</div>
 
 <section class="panel">
 <label>مصدر الأسعار — Twelve Data WebSocket (سوق حقيقي، وليس OTC)</label>
 <input id="providerKey" type="password" placeholder="أدخل API Key من Twelve Data" autocomplete="off">
 <div class="small">المفتاح يُستخدم في هذه الجلسة فقط ولا يُحفظ في GitHub أو التخزين المحلي. لا ترسله لأحد ولا تشارك لقطة شاشة تظهره.</div>
-<div class="small">اتصال آمن: wss://ws.twelvedata.com/v1/quotes/price — الخطة المجانية تسمح بالتجربة على 8 رموز مسموحة فقط؛ توفر كل رمز يتأكد من رد المزود.</div>
+<div class="small">اتصال آمن: wss://ws.twelvedata.com/v1/quotes/price — الخطة المجانية تسمح بالتجربة على 8 رموز مسموحة فقط؛ هذه النسخة تطلب 10 رموز، وقد تحتاج خطة Pro لاشتراكها كلها. توفر كل رمز يتأكد من رد المزود.</div>
 <div id="marketStatus" class="small" style="margin:10px 0;line-height:2">حالة الأسواق: لم يبدأ الفحص</div>
 <div class="actions">
 <button class="secondary" id="connect">اتصال بمصدر OTC</button>
@@ -67,8 +67,6 @@ footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
 <option value="USDJPY">USD/JPY</option>
 <option value="USDCHF">USD/CHF</option>
 <option value="AUDUSD">AUD/USD</option>
-<option value="Silver">Silver (OTC) — الفضة</option>
-<option value="Brent">Brent Oil</option>
 <option value="US30">US30</option>
 <option value="NAS100">NAS100</option>
 <option value="SPX500">SPX500</option>
@@ -146,7 +144,7 @@ const instruments=[
  {asset:"DAX40",label:"DAX 40",symbol:"DAX",aliases:["DAX","DAX40","GER40"]}
 ];
 const instrumentByAlias={};instruments.forEach(x=>x.aliases.concat([x.symbol]).forEach(k=>instrumentByAlias[norm(k)]=x));
-let feed=null,timer=null,heartbeat=null,watchdog=null,history=[],priceSnapshots={},lastFeedAtByAsset={},lastSignalAtByAsset={},pendingByAsset={},lastAnalyzedQuoteByAsset={},marketStates={};
+let feed=null,timer=null,heartbeat=null,watchdog=null,freshnessTimer=null,history=[],priceSnapshots={},lastFeedAtByAsset={},lastSignalAtByAsset={},pendingByAsset={},lastAnalyzedQuoteByAsset={},marketStates={};
 let current=0,prices=[],lastFeedAt=0;
 function norm(v){return String(v??"").trim().toUpperCase().replace(/[^A-Z0-9]/g,"")}
 function selectedAsset(){return $("asset").value}
@@ -172,6 +170,7 @@ function acceptQuote(q){
 }
 function handleMessage(raw){
  let msg;try{msg=JSON.parse(raw)}catch{return}
+ if(msg.event==="error"||msg.status==="error"){setFeedStatus("رسالة خطأ من المزود: "+(msg.message||msg.code||"تحقق من المفتاح والخطة"));return}
  if(msg.event==="subscribe-status"||msg.event==="status"){
   const success=msg.success||msg.subscribed||[],fails=msg.fails||msg.failed||[];
   success.forEach(x=>{const item=instrumentByAlias[norm(x.symbol)];if(item&&marketStates[item.asset]!=="يصل سعر مباشر")marketStates[item.asset]="متاح — بانتظار أول سعر"});
@@ -187,13 +186,13 @@ function connectFeed(){
  Object.keys(marketStates).forEach(k=>marketStates[k]="جارٍ فحص الاشتراك");renderMarkets();
  try{
   const socket=new WebSocket("wss://ws.twelvedata.com/v1/quotes/price?apikey="+encodeURIComponent(key));feed=socket;setFeedStatus("جارٍ الاتصال بـ Twelve Data...");
-  socket.onopen=()=>{if(feed!==socket)return;const symbols=instruments.map(x=>x.symbol).join(",");socket.send(JSON.stringify({action:"subscribe",params:{symbols}}));setFeedStatus("اتصل WebSocket — أُرسل طلب فحص الرموز؛ ننتظر قبول المزود",true);if(heartbeat)clearInterval(heartbeat);heartbeat=setInterval(()=>{if(feed===socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({action:"heartbeat"}))},10000);if(watchdog)clearTimeout(watchdog);watchdog=setTimeout(()=>{instruments.forEach(x=>{if(marketStates[x.asset]==="جارٍ فحص الاشتراك"||marketStates[x.asset]==="متاح — بانتظار أول سعر")marketStates[x.asset]="لم يصل سعر — تحقق من الرمز/الخطة"});renderMarkets()},15000)};
+  socket.onopen=()=>{if(feed!==socket)return;const symbols=instruments.map(x=>x.symbol).join(",");socket.send(JSON.stringify({action:"subscribe",params:{symbols}}));setFeedStatus("اتصل WebSocket — أُرسل طلب فحص الرموز؛ ننتظر قبول المزود",true);if(heartbeat)clearInterval(heartbeat);heartbeat=setInterval(()=>{if(feed===socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({action:"heartbeat"}))},10000);if(watchdog)clearTimeout(watchdog);watchdog=setTimeout(()=>{instruments.forEach(x=>{if(marketStates[x.asset]==="جارٍ فحص الاشتراك"||marketStates[x.asset]==="متاح — بانتظار أول سعر")marketStates[x.asset]="لم يصل سعر — تحقق من الرمز/الخطة"});renderMarkets()},15000);if(freshnessTimer)clearInterval(freshnessTimer);freshnessTimer=setInterval(()=>{const now=Date.now();instruments.forEach(x=>{if(marketStates[x.asset]==="يصل سعر مباشر"&&now-(lastFeedAtByAsset[x.asset]||0)>MAX_TICK_AGE_MS)marketStates[x.asset]="السعر قديم — أوقف الإشارة"});renderMarkets()},5000)};
   socket.onmessage=e=>{if(feed===socket)handleMessage(e.data)};
   socket.onerror=()=>{if(feed===socket)setFeedStatus("تعذر الاتصال؛ تحقق من المفتاح والخطة والاتصال")};
-  socket.onclose=()=>{if(feed===socket){feed=null;if(heartbeat)clearInterval(heartbeat);setFeedStatus("انقطع اتصال Twelve Data");if(timer){clearInterval(timer);timer=null}resetDisplay()}};
+  socket.onclose=()=>{if(feed===socket){feed=null;if(heartbeat)clearInterval(heartbeat);if(freshnessTimer)clearInterval(freshnessTimer);setFeedStatus("انقطع اتصال Twelve Data");if(timer){clearInterval(timer);timer=null}resetDisplay()}};
  }catch(e){feed=null;setFeedStatus("تعذر إنشاء اتصال WebSocket")}
 }
-function disconnectFeed(){if(feed){const s=feed;feed=null;s.close()}if(heartbeat)clearInterval(heartbeat);if(watchdog)clearTimeout(watchdog);if(timer){clearInterval(timer);timer=null}setFeedStatus("تم قطع الاتصال");resetDisplay()}
+function disconnectFeed(){if(feed){const s=feed;feed=null;s.close()}if(heartbeat)clearInterval(heartbeat);if(watchdog)clearTimeout(watchdog);if(freshnessTimer)clearInterval(freshnessTimer);if(timer){clearInterval(timer);timer=null}setFeedStatus("تم قطع الاتصال");resetDisplay()}
 function ema(data,n){if(data.length<n)return null;const k=2/(n+1);let v=data[0];for(let i=1;i<data.length;i++)v=data[i]*k+v*(1-k);return v}
 function rsi(data,n=7){if(data.length<n+1)return null;let gains=0,losses=0;for(let i=data.length-n;i<data.length;i++){const d=data[i]-data[i-1];if(d>0)gains+=d;else losses-=d}if(losses===0)return gains===0?50:100;return 100-100/(1+gains/losses)}
 function priceAtOrBefore(path,ms,tolerance){const target=Date.now()-ms;for(let i=path.length-1;i>=0;i--){if(path[i].receivedAt<=target)return target-path[i].receivedAt<=tolerance?path[i]:null}return null}
