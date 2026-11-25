@@ -163,7 +163,7 @@ function acceptQuote(q){
  if(q.time>now+10000||now-q.time>MAX_TICK_AGE_MS){setFeedStatus("تم تجاهل سعر قديم أو بتوقيت غير صالح");return;}
  current=q.price;lastFeedAt=now;
  const asset=$("asset").value,arr=priceSnapshots[asset]??=[];
- arr.push({time:q.time,receivedAt:now,price:q.price});
+ arr.push({time:now,receivedAt:now,providerTime:q.time,price:q.price});
  while(arr.length>1000||arr.length&&now-arr[0].receivedAt>180000)arr.shift();
  priceSnapshots[asset]=arr;
  prices=arr.map(x=>x.price);
