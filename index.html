@@ -13,7 +13,9 @@ header{padding:22px 17px;background:#111c2e;border-bottom:1px solid #26364d}
 h1{font-size:23px;margin:0 0 7px}
 .sub{font-size:12px;color:#9eafc8}
 main{padding:15px;max-width:700px;margin:auto}
-.notice{background:#392b13;color:#ffd98a;border:1px solid #75551d;padding:12px;border-radius:12px;font-size:12px;line-height:1.7;margin-bottom:14px}
+.notice{background:#392b13;color:#ffd98a;border:1px solid #75551d;padding:12px;border-radius:12px;font-size:12px;line-height:1.7;margin-bottom:14}
+input{font:inherit;border-radius:10px;padding:12px;border:1px solid #354963;background:#1b2b42;color:white;width:100%;direction:ltr;margin:6px 0 10px}
+button:disabled{opacity:.45;cursor:not-allowed}
 .panel{background:#121e30;border:1px solid #26364d;border-radius:15px;padding:15px;margin-bottom:14px}
 label{display:block;color:#aabbd2;font-size:12px;margin-bottom:8px}
 select,button{font:inherit;border-radius:10px;padding:12px;border:1px solid #354963;background:#1b2b42;color:white}
@@ -44,12 +46,19 @@ footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
 <div class="sub">محرك التحليل الفني — إصدار الفلترة والتأكيد</div>
 </header>
 <main>
-<div class="notice">وضع المحاكاة: الأسعار مولّدة داخل التطبيق وليست أسعار ExpertOption أو OTC مباشرة. تمت إضافة تأكيدين متتاليين وفلتر قوة وحدّ زمني بين الإشارات. لا توجد صفقات حقيقية.</div>
+<div class="notice">وضع OTC: لا يتم توليد أسعار تجريبية. المحرك لا يصدر إشارات إلا بعد استقبال سعر من مصدر OTC خارجي والتحقق من الأصل وحداثة البيانات. لا توجد صفقات حقيقية.</div>
 
 <section class="panel">
+<label>مصدر أسعار OTC (WebSocket)</label>
+<input id="feedUrl" type="url" placeholder="wss://عنوان-مزود-الأسعار" autocomplete="off">
+<div class="actions">
+<button class="secondary" id="connect">اتصال بمصدر OTC</button>
+<button class="secondary" id="disconnect">قطع الاتصال</button>
+</div>
+<div class="small" id="feedStatus">غير متصل — أدخل عنوان WebSocket من مزود بيانات OTC مرخّص</div>
 <label>اختر الأصل</label>
 <select id="asset">
-<option value="Gold">Gold (OTC) — الذهب</option>
+<option value="Gold">XAUUSD (OTC) — الذهب</option>
 <option value="EURUSD">EUR/USD</option>
 <option value="GBPUSD">GBP/USD</option>
 <option value="USDJPY">USD/JPY</option>
@@ -127,14 +136,56 @@ Silver:[28,.04],Brent:[80,.15],US30:[39000,8],
 NAS100:[18000,6],SPX500:[5200,2],DAX40:[18500,7]
 };
 let prices=[],current=0,timer=null,history=[],priceSnapshots={};
-let pendingSignal=null,pendingCount=0,lastSignalAt=0;
-const COOLDOWN_MS=30000, MIN_STRENGTH=70;
-function seed(){
- const base=configs[$("asset").value][0];
- prices=Array.from({length:40},(_,i)=>base+(Math.random()-.5)*base*.001);
- current=prices.at(-1);
- pendingSignal=null;pendingCount=0;
+let pendingSignal=null,pendingCount=0,lastSignalAt=0,feed=null,lastFeedAt=0;
+const COOLDOWN_MS=30000, MIN_STRENGTH=75, MAX_TICK_AGE_MS=15000;
+const symbolAliases={Gold:["GOLD","XAUUSD","XAUUSDOTC"],Silver:["SILVER","XAGUSD","XAGUSDOTC"],Brent:["BRENT","UKOIL","BRN"],EURUSD:["EURUSD","EURUSDOTC"],GBPUSD:["GBPUSD","GBPUSDOTC"],USDJPY:["USDJPY","USDJPYOTC"],USDCHF:["USDCHF","USDCHFOTC"],AUDUSD:["AUDUSD","AUDUSDOTC"],US30:["US30","DJI","DOW"],NAS100:["NAS100","USTEC","NASDAQ"],SPX500:["SPX500","US500","SP500"],DAX40:["DAX40","GER40"]};
+function normalizeSymbol(v){return String(v||"").toUpperCase().replace(/[^A-Z0-9]/g,"");}
+function selectedAliases(){return (symbolAliases[$("asset").value]||[$("asset").value]).map(normalizeSymbol);}
+function setFeedStatus(message,ok=false){$("feedStatus").textContent=message;$("feedStatus").style.color=ok?"#42df9b":"#ffd477";}
+function seed(){prices=[];current=0;pendingSignal=null;pendingCount=0;priceSnapshots[$("asset").value]=[];render();}
+function parseFeedMessage(raw){
+ let data;try{data=JSON.parse(raw)}catch{return []}
+ const list=Array.isArray(data)?data:(Array.isArray(data.data)?data.data:[data]);
+ return list.map(q=>{
+  if(!q||typeof q!=="object")return null;
+  const symbol=q.symbol??q.s??q.ticker??q.instrument;
+  const bid=Number(q.bid),ask=Number(q.ask);
+  const p=Number(q.mid??q.price??q.last??(Number.isFinite(bid)&&Number.isFinite(ask)?(bid+ask)/2:NaN));
+  let stamp=q.timestamp??q.time??q.ts;
+  let time=typeof stamp==="number"?(stamp<1e12?stamp*1000:stamp):(stamp?Date.parse(stamp):Date.now());
+  if(!Number.isFinite(time))time=Date.now();
+  return {symbol:normalizeSymbol(symbol),price:p,time};
+ }).filter(q=>q&&Number.isFinite(q.price)&&q.price>0);
 }
+function acceptQuote(q){
+ if(!selectedAliases().includes(q.symbol))return;
+ const now=Date.now();
+ if(q.time>now+10000||now-q.time>MAX_TICK_AGE_MS){setFeedStatus("تم تجاهل سعر قديم أو بتوقيت غير صالح");return;}
+ current=q.price;lastFeedAt=now;
+ const asset=$("asset").value,arr=priceSnapshots[asset]??=[];
+ arr.push({time:q.time,receivedAt:now,price:q.price});
+ while(arr.length>1000||arr.length&&now-arr[0].receivedAt>180000)arr.shift();
+ priceSnapshots[asset]=arr;
+ prices=arr.map(x=>x.price);
+ $("price").textContent=fmt(current);
+ $("updated").textContent="آخر سعر مستلم: "+new Date(now).toLocaleTimeString("ar-SA");
+ setFeedStatus("متصل — "+q.symbol+" — عمر آخر تحديث: أقل من 15 ثانية",true);
+}
+function connectFeed(){
+ const url=$("feedUrl").value.trim();
+ if(!/^wss?:\/\//i.test(url)){setFeedStatus("أدخل عنوان WebSocket صحيحاً يبدأ بـ wss:// أو ws://");return;}
+ try{localStorage.setItem("expertoption_otc_ws",url)}catch{}
+ if(feed){try{feed.close()}catch{}}
+ try{
+  feed=new WebSocket(url);
+  setFeedStatus("جارٍ الاتصال بمصدر OTC...");
+  feed.onopen=()=>setFeedStatus("تم الاتصال — بانتظار بيانات الأصل المختار",true);
+  feed.onmessage=e=>parseFeedMessage(e.data).forEach(acceptQuote);
+  feed.onerror=()=>setFeedStatus("تعذر الاتصال بمصدر الأسعار؛ تحقق من العنوان والصلاحيات");
+  feed.onclose=()=>{if(feed)setFeedStatus("انقطع اتصال مصدر OTC");};
+ }catch(e){setFeedStatus("تعذر إنشاء اتصال WebSocket");}
+}
+function disconnectFeed(){if(feed){feed.close();feed=null;}setFeedStatus("غير متصل بمصدر OTC");}
 function ema(data,period){
  const k=2/(period+1);let v=data[0];
  for(let i=1;i<data.length;i++)v=data[i]*k+v*(1-k);
@@ -153,44 +204,46 @@ function fmt(v){
  return v.toFixed(["EURUSD","GBPUSD","USDCHF","AUDUSD"].includes(n)?5:
  n==="USDJPY"?3:n==="Gold"||n==="Silver"||n==="Brent"?3:2);
 }
+function valueAtOrBefore(asset,ms){
+ const path=priceSnapshots[asset]||[],target=Date.now()-ms;
+ for(let i=path.length-1;i>=0;i--)if(path[i].receivedAt<=target)return path[i].price;
+ return null;
+}
 function analyze(){
- const base=configs[$("asset").value];
- current+=(Math.random()-.5)*base[1]*1.35;
- prices.push(current);if(prices.length>100)prices.shift();
- const e5=ema(prices.slice(-30),5),e13=ema(prices.slice(-40),13);
- const rv=rsi(prices),mom=prices.at(-1)-prices.at(-4);
- const slope=prices.at(-1)-prices.at(-7);
- const separation=Math.abs(e5-e13)/base[1];
- const momentumScore=Math.abs(mom)/base[1];
- const up=e5>e13&&mom>0&&slope>0;
- const down=e5<e13&&mom<0&&slope<0;
- const raw=up&&rv>=52&&rv<=68?"CALL":
-            down&&rv>=32&&rv<=48?"PUT":"WAIT";
- const strength=raw==="WAIT"?0:Math.min(94,60+Math.round(Math.min(18,separation*180)+Math.min(16,momentumScore*70)));
- const valid=raw!=="WAIT"&&strength>=MIN_STRENGTH;
- const sig=valid?raw:"WAIT";
- $("price").textContent=fmt(current);
- $("ema5").textContent=fmt(e5);$("ema13").textContent=fmt(e13);
+ const asset=$("asset").value,now=Date.now(),path=priceSnapshots[asset]||[];
+ if(!path.length||now-lastFeedAt>MAX_TICK_AGE_MS){
+  $("signal").textContent="WAIT — انتظار";
+  $("signal").className="signal wait";
+  $("reason").textContent="لا توجد بيانات OTC حديثة؛ تم تعطيل الإشارات";
+  $("strength").textContent="0%";
+  $("trend").textContent="غير متاح";
+  $("momentum").textContent="غير متاح";
+  $("runStatus").textContent="بانتظار سعر OTC حديث";
+  return;
+ }
+ const e5=ema(prices.slice(-30),5),e13=ema(prices.slice(-40),13),rv=rsi(prices,7);
+ const p5=valueAtOrBefore(asset,5000),p15=valueAtOrBefore(asset,15000),p30=valueAtOrBefore(asset,30000);
+ const ready=p5!==null&&p15!==null&&p30!==null;
+ const m5=ready?current-p5:null,m15=ready?current-p15:null,m30=ready?current-p30:null;
+ const up=ready&&e5>e13&&m5>0&&m15>0&&m30>0;
+ const down=ready&&e5<e13&&m5<0&&m15<0&&m30<0;
+ const aligned=up||down;
+ const rsiOK=up?(rv>=52&&rv<=70):(down?(rv>=30&&rv<=48):false);
+ const sig=aligned&&rsiOK?(up?"CALL":"PUT"):"WAIT";
+ const agreement=aligned&&rsiOK?94:0;
+ $("price").textContent=fmt(current);$("ema5").textContent=fmt(e5);$("ema13").textContent=fmt(e13);
  $("rsi").textContent=rv.toFixed(1);
- $("momentum").textContent=mom>0?"إيجابي":mom<0?"سلبي":"محايد";
- $("trend").textContent=up?"صاعد":down?"هابط":"متذبذب";
+ $("momentum").textContent=!ready?"بانتظار 30 ثانية":up?"إيجابي على 3 فترات":down?"سلبي على 3 فترات":"متعارض";
+ $("trend").textContent=up?"صاعد":down?"هابط":"غير مؤكد";
  $("signal").textContent=sig==="CALL"?"CALL — صعود":sig==="PUT"?"PUT — هبوط":"WAIT — انتظار";
  $("signal").className="signal "+sig.toLowerCase();
- $("strength").textContent=(sig==="WAIT"?Math.min(69,strength):strength)+"%";
- $("reason").textContent=sig==="WAIT"?
-  (raw!=="WAIT"?"قوة التأكيد أقل من الحد المطلوب":"الاتجاه أو الزخم أو RSI غير متوافق"):
-  "اتجاه EMA والزخم وRSI متوافقة؛ بانتظار التأكيد الثاني";
- $("updated").textContent="آخر تحديث: "+new Date().toLocaleTimeString("ar-SA");
- const asset=$("asset").value,now=Date.now();
- (priceSnapshots[asset]??=[]).push({time:now,price:current});
- if(priceSnapshots[asset].length>500)priceSnapshots[asset].shift();
+ $("strength").textContent=agreement+"%";
+ $("reason").textContent=!ready?"نجمع بيانات OTC لمدة 30 ثانية قبل إصدار الإشارة":!aligned?"اتجاه الزخم على 5 و15 و30 ثانية غير متوافق":!rsiOK?"RSI لا يؤكد اتجاه الزخم":"توافق EMA والزخم متعدد الفترات وRSI؛ بانتظار التأكيد الثاني";
+ $("updated").textContent="آخر تحديث: "+new Date(lastFeedAt).toLocaleTimeString("ar-SA");
  if(sig==="WAIT"){pendingSignal=null;pendingCount=0;}
- else {
-  if(pendingSignal===sig)pendingCount++;
-  else {pendingSignal=sig;pendingCount=1;}
-  if(pendingCount>=2&&now-lastSignalAt>=COOLDOWN_MS){
-   addSignal(sig,strength);lastSignalAt=now;pendingCount=0;
-  }
+ else{
+  if(pendingSignal===sig)pendingCount++;else{pendingSignal=sig;pendingCount=1;}
+  if(pendingCount>=2&&now-lastSignalAt>=COOLDOWN_MS){addSignal(sig,agreement);lastSignalAt=now;pendingCount=0;}
  }
  evaluateSignals();render();
 }
@@ -243,10 +296,12 @@ function setRunState(running){
  $("start").disabled=running;
 }
 $("asset").onchange=()=>{seed();analyze()};
+$("connect").onclick=connectFeed;
+$("disconnect").onclick=disconnectFeed;
 $("once").onclick=()=>analyze();
 $("start").onclick=()=>{
  if(timer)return;
- seed();analyze();
+ analyze();
  timer=setInterval(analyze,5000);
  setRunState(true);
 };
@@ -262,6 +317,7 @@ $("export").onclick=()=>{
  const a=document.createElement("a");a.href=URL.createObjectURL(blob);
  a.download="expertoption-demo-signals.csv";a.click();URL.revokeObjectURL(a.href);
 };
+try{$("feedUrl").value=localStorage.getItem("expertoption_otc_ws")||""}catch{}
 seed();analyze();setRunState(false);
 </script>
 </body>
