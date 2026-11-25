@@ -183,7 +183,7 @@ function acceptQuote(q){
  if(q.stale||q.marketState==="closed"){setFeedStatus("رفض قراءة قديمة أو سوق مغلق من المصدر");return}
  if(!Number.isFinite(q.time)||q.time>now+10000||now-q.time>MAX_TICK_AGE_MS){setFeedStatus("تم رفض سعر متأخر أو بتوقيت غير صالح");return}
  const path=priceSnapshots[a]||[];
- if(path.length&&q.time<=path[path.length-1].providerTime)return;
+ if(path.length&&(q.time<path[path.length-1].providerTime||(q.time===path[path.length-1].providerTime&&q.price===path[path.length-1].price)))return;
  const point={time:now,receivedAt:now,providerTime:q.time,price:q.price};
  path.push(point);while(path.length>1500||path.length&&now-path[0].receivedAt>300000)path.shift();
  priceSnapshots[a]=path;prices=path.map(x=>x.price);current=q.price;lastFeedAt=now;lastFeedAtByAsset[a]=now;
@@ -215,9 +215,11 @@ function rsi(data,n=7){
  for(let i=data.length-n;i<data.length;i++){const d=data[i]-data[i-1];if(d>0)gains+=d;else losses-=d}
  if(losses===0)return gains===0?50:100;return 100-100/(1+gains/losses)
 }
-function priceAtOrBefore(path,ms){
+function priceAtOrBefore(path,ms,tolerance){
  const target=Date.now()-ms;
- for(let i=path.length-1;i>=0;i--)if(path[i].receivedAt<=target)return path[i].price;
+ for(let i=path.length-1;i>=0;i--){
+  if(path[i].receivedAt<=target)return target-path[i].receivedAt<=tolerance?path[i]:null;
+ }
  return null;
 }
 function analyze(){
@@ -226,9 +228,9 @@ function analyze(){
  loadAssetBuffer();
  if(prices.length<MIN_POINTS){$("reason").textContent="نجمع "+MIN_POINTS+" قراءات صالحة قبل حساب المؤشرات ("+prices.length+"/"+MIN_POINTS+")";$("signal").textContent="WAIT — انتظار";$("signal").className="signal wait";$("strength").textContent="—";return}
  const e5=ema(prices.slice(-60),5),e13=ema(prices.slice(-60),13),rv=rsi(prices,7);
- const p5=priceAtOrBefore(path,5000),p15=priceAtOrBefore(path,15000),p30=priceAtOrBefore(path,30000);
- const ready=[p5,p15,p30].every(x=>x!==null&&Number.isFinite(x));
- const deltas=ready?[current-p5,current-p15,current-p30]:[];
+ const p5=priceAtOrBefore(path,5000,4000),p15=priceAtOrBefore(path,15000,6000),p30=priceAtOrBefore(path,30000,8000);
+ const ready=[p5,p15,p30].every(x=>x!==null&&Number.isFinite(x.price));
+ const deltas=ready?[current-p5.price,current-p15.price,current-p30.price]:[];
  const dirs=ready?deltas.map(x=>Math.sign(x)):[];
  const up=ready&&e5>e13&&dirs.every(x=>x===1);
  const down=ready&&e5<e13&&dirs.every(x=>x===-1);
@@ -239,7 +241,7 @@ function analyze(){
  const rsiPoints=rsiOK?15:0,freshPoints=now-last<=5000?10:now-last<=10000?7:4;
  const strength=Math.min(100,emaPoints+momentumPoints+rsiPoints+freshPoints);
  $("ema5").textContent=fmt(e5);$("ema13").textContent=fmt(e13);$("rsi").textContent=rv.toFixed(1);
- $("momentum").textContent=!ready?"بانتظار 30 ثانية":deltas.map((d,i)=>([5,15,30][i])+"ث "+(d>0?"+":"")+((d/(i===0?p5:i===1?p15:p30))*100).toFixed(3)+"%").join(" | ");
+ $("momentum").textContent=!ready?"بانتظار 30 ثانية":deltas.map((d,i)=>([5,15,30][i])+"ث "+(d>0?"+":"")+((d/(i===0?p5.price:i===1?p15.price:p30.price))*100).toFixed(3)+"%").join(" | ");
  $("trend").textContent=up?"صاعد":down?"هابط":"غير متوافق";
  $("signal").textContent=sig==="CALL"?"CALL — صعود":sig==="PUT"?"PUT — هبوط":"WAIT — انتظار";
  $("signal").className="signal "+sig.toLowerCase();$("strength").textContent=strength+"%";
@@ -248,7 +250,7 @@ function analyze(){
  if(sig==="WAIT"){pendingByAsset[a]=null}
  else{
   const previous=lastAnalyzedQuoteByAsset[a]||0;
-  const quoteId=path[path.length-1].providerTime;
+  const quoteId=path[path.length-1].receivedAt;
   if(quoteId>previous){
    const pending=pendingByAsset[a];
    const count=pending&&pending.signal===sig?pending.count+1:1;
