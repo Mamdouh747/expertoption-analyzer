@@ -51,6 +51,9 @@ footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
 <section class="panel">
 <label>مصدر أسعار OTC (WebSocket)</label>
 <input id="feedUrl" type="url" placeholder="wss://عنوان-مزود-الأسعار" autocomplete="off">
+<label>رسالة الاشتراك (حسب توثيق المزود — اختيارية)</label>
+<input id="subscribeMessage" type="text" placeholder='مثال: {"action":"subscribe","symbol":"EURUSD"}' autocomplete="off">
+<div class="small">لا تضع كلمة مرور الوسيط أو ملفات الجلسة هنا. استخدم فقط بيانات اشتراك مخصصة من مزود الأسعار.</div>
 <div class="actions">
 <button class="secondary" id="connect">اتصال بمصدر OTC</button>
 <button class="secondary" id="disconnect">قطع الاتصال</button>
@@ -129,196 +132,161 @@ footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
 </main>
 <script>
 const $=id=>document.getElementById(id);
-const configs={
-Gold:[2350,2],EURUSD:[1.08,.0005],GBPUSD:[1.27,.0006],
-USDJPY:[150,.08],USDCHF:[.89,.0005],AUDUSD:[.66,.0005],
-Silver:[28,.04],Brent:[80,.15],US30:[39000,8],
-NAS100:[18000,6],SPX500:[5200,2],DAX40:[18500,7]
+const COOLDOWN_MS=30000,MAX_TICK_AGE_MS=15000,MIN_POINTS=14;
+const aliases={
+ Gold:["GOLD","XAUUSD","XAUUSDOTC"],Silver:["SILVER","XAGUSD","XAGUSDOTC"],
+ Brent:["BRENT","UKOIL","BRN"],EURUSD:["EURUSD","EURUSDOTC"],GBPUSD:["GBPUSD","GBPUSDOTC"],
+ USDJPY:["USDJPY","USDJPYOTC"],USDCHF:["USDCHF","USDCHFOTC"],AUDUSD:["AUDUSD","AUDUSDOTC"],
+ US30:["US30","DJI","DOW"],NAS100:["NAS100","USTEC","NASDAQ"],SPX500:["SPX500","US500","SP500"],DAX40:["DAX40","GER40"]
 };
-let prices=[],current=0,timer=null,history=[],priceSnapshots={};
-let pendingSignal=null,pendingCount=0,lastSignalAt=0,feed=null,lastFeedAt=0;
-const COOLDOWN_MS=30000, MIN_STRENGTH=75, MAX_TICK_AGE_MS=15000;
-const symbolAliases={Gold:["GOLD","XAUUSD","XAUUSDOTC"],Silver:["SILVER","XAGUSD","XAGUSDOTC"],Brent:["BRENT","UKOIL","BRN"],EURUSD:["EURUSD","EURUSDOTC"],GBPUSD:["GBPUSD","GBPUSDOTC"],USDJPY:["USDJPY","USDJPYOTC"],USDCHF:["USDCHF","USDCHFOTC"],AUDUSD:["AUDUSD","AUDUSDOTC"],US30:["US30","DJI","DOW"],NAS100:["NAS100","USTEC","NASDAQ"],SPX500:["SPX500","US500","SP500"],DAX40:["DAX40","GER40"]};
-function normalizeSymbol(v){return String(v||"").toUpperCase().replace(/[^A-Z0-9]/g,"");}
-function selectedAliases(){return (symbolAliases[$("asset").value]||[$("asset").value]).map(normalizeSymbol);}
-function setFeedStatus(message,ok=false){$("feedStatus").textContent=message;$("feedStatus").style.color=ok?"#42df9b":"#ffd477";}
-function seed(){prices=[];current=0;pendingSignal=null;pendingCount=0;priceSnapshots[$("asset").value]=[];render();}
-function parseFeedMessage(raw){
- let data;try{data=JSON.parse(raw)}catch{return []}
- const list=Array.isArray(data)?data:(Array.isArray(data.data)?data.data:[data]);
- return list.map(q=>{
-  if(!q||typeof q!=="object")return null;
-  const symbol=q.symbol??q.s??q.ticker??q.instrument;
-  const bid=Number(q.bid),ask=Number(q.ask);
-  const p=Number(q.mid??q.price??q.last??(Number.isFinite(bid)&&Number.isFinite(ask)?(bid+ask)/2:NaN));
-  let stamp=q.timestamp??q.time??q.ts;
-  let time=typeof stamp==="number"?(stamp<1e12?stamp*1000:stamp):(stamp?Date.parse(stamp):Date.now());
-  if(!Number.isFinite(time))time=Date.now();
-  return {symbol:normalizeSymbol(symbol),price:p,time};
- }).filter(q=>q&&Number.isFinite(q.price)&&q.price>0);
+let feed=null,timer=null,history=[],priceSnapshots={},lastFeedAtByAsset={},lastSignalAtByAsset={},pendingByAsset={},lastAnalyzedQuoteByAsset={};
+let current=0,prices=[],lastFeedAt=0;
+function selectedAsset(){return $("asset").value}
+function norm(v){return String(v??"").trim().toUpperCase().replace(/[^A-Z0-9]/g,"")}
+function selectedAliases(){return (aliases[selectedAsset()]||[selectedAsset()]).map(norm)}
+function setFeedStatus(msg,ok=false){$("feedStatus").textContent=msg;$("feedStatus").style.color=ok?"#42df9b":"#ffd477"}
+function fmt(v){const a=selectedAsset();return Number(v).toFixed(["EURUSD","GBPUSD","USDCHF","AUDUSD"].includes(a)?5:a==="USDJPY"?3:["Gold","Silver","Brent"].includes(a)?3:2)}
+function resetDisplay(){current=0;prices=[];$("price").textContent="—";$("updated").textContent="بانتظار بيانات الأصل المختار";$("ema5").textContent="—";$("ema13").textContent="—";$("rsi").textContent="—";$("momentum").textContent="—";$("trend").textContent="—";$("signal").textContent="WAIT — انتظار";$("signal").className="signal wait";$("strength").textContent="—";$("reason").textContent="بانتظار سعر OTC مطابق وحديث";$("runStatus").textContent="بانتظار بيانات المصدر"}
+function loadAssetBuffer(){const a=selectedAsset(),path=priceSnapshots[a]||[];prices=path.map(x=>x.price);current=path.length?path[path.length-1].price:0;lastFeedAt=lastFeedAtByAsset[a]||0}
+function parseTime(v){
+ if(v===undefined||v===null||v==="")return Date.now();
+ if(typeof v==="number"){if(!Number.isFinite(v))return NaN;return v<1e11?v*1000:v}
+ const n=Number(v);if(Number.isFinite(n)&&String(v).trim()!=="")return n<1e11?n*1000:n;
+ return Date.parse(v);
+}
+function unpack(raw){
+ let root;try{root=JSON.parse(raw)}catch{return []}
+ const out=[],queue=Array.isArray(root)?root:[root];let seen=0;
+ while(queue.length&&seen++<100){
+  const q=queue.shift();if(!q||typeof q!=="object")continue;
+  if(Array.isArray(q)){queue.push(...q);continue}
+  if(q.data&&typeof q.data==="object")queue.push(q.data);
+  if(q.payload&&typeof q.payload==="object")queue.push(q.payload);
+  if(q.tick&&typeof q.tick==="object")queue.push(q.tick);
+  if(q.quote&&typeof q.quote==="object")queue.push(q.quote);
+  const symbol=q.symbol??q.s??q.ticker??q.instrument??q.asset;
+  if(symbol===undefined)continue;
+  let p=Number(q.price??q.mid??q.last);
+  if(!Number.isFinite(p)||p<=0){
+   const bid=Number(q.bid),ask=Number(q.ask);
+   if(Number.isFinite(bid)&&bid>0&&Number.isFinite(ask)&&ask>0)p=(bid+ask)/2;
+  }
+  if(!Number.isFinite(p)||p<=0)continue;
+  const t=parseTime(q.timestamp??q.time??q.ts??q.time_ms??q.datetime);
+  out.push({symbol:norm(symbol),price:p,time:t,stale:q.stale===true,marketState:String(q.marketState??q.market_state??"").toLowerCase()});
+ }
+ return out;
 }
 function acceptQuote(q){
- if(!selectedAliases().includes(q.symbol))return;
+ const a=selectedAsset();if(!selectedAliases().includes(q.symbol))return;
  const now=Date.now();
- if(q.time>now+10000||now-q.time>MAX_TICK_AGE_MS){setFeedStatus("تم تجاهل سعر قديم أو بتوقيت غير صالح");return;}
- current=q.price;lastFeedAt=now;
- const asset=$("asset").value,arr=priceSnapshots[asset]??=[];
- arr.push({time:now,receivedAt:now,providerTime:q.time,price:q.price});
- while(arr.length>1000||arr.length&&now-arr[0].receivedAt>180000)arr.shift();
- priceSnapshots[asset]=arr;
- prices=arr.map(x=>x.price);
- $("price").textContent=fmt(current);
- $("updated").textContent="آخر سعر مستلم: "+new Date(now).toLocaleTimeString("ar-SA");
- setFeedStatus("متصل — "+q.symbol+" — عمر آخر تحديث: أقل من 15 ثانية",true);
+ if(q.stale||q.marketState==="closed"){setFeedStatus("رفض قراءة قديمة أو سوق مغلق من المصدر");return}
+ if(!Number.isFinite(q.time)||q.time>now+10000||now-q.time>MAX_TICK_AGE_MS){setFeedStatus("تم رفض سعر متأخر أو بتوقيت غير صالح");return}
+ const path=priceSnapshots[a]||[];
+ if(path.length&&q.time<=path[path.length-1].providerTime)return;
+ const point={time:now,receivedAt:now,providerTime:q.time,price:q.price};
+ path.push(point);while(path.length>1500||path.length&&now-path[0].receivedAt>300000)path.shift();
+ priceSnapshots[a]=path;prices=path.map(x=>x.price);current=q.price;lastFeedAt=now;lastFeedAtByAsset[a]=now;
+ $("price").textContent=fmt(current);$("updated").textContent="آخر قراءة من المزود: "+new Date(q.time).toLocaleTimeString("ar-SA");
+ setFeedStatus("بيانات مستلمة للرمز "+q.symbol+" — تحقق من أن المصدر يوفّر OTC فعلياً",true);
 }
 function connectFeed(){
  const url=$("feedUrl").value.trim();
- if(!/^wss?:\/\//i.test(url)){setFeedStatus("أدخل عنوان WebSocket صحيحاً يبدأ بـ wss:// أو ws://");return;}
+ if(!/^wss:\/\//i.test(url)){setFeedStatus("استخدم عنوان WebSocket آمن يبدأ بـ wss://");return}
  try{localStorage.setItem("expertoption_otc_ws",url)}catch{}
- if(feed){try{feed.close()}catch{}}
+ if(feed){try{feed.close()}catch{}feed=null}
  try{
-  feed=new WebSocket(url);
-  setFeedStatus("جارٍ الاتصال بمصدر OTC...");
-  feed.onopen=()=>setFeedStatus("تم الاتصال — بانتظار بيانات الأصل المختار",true);
-  feed.onmessage=e=>parseFeedMessage(e.data).forEach(acceptQuote);
-  feed.onerror=()=>setFeedStatus("تعذر الاتصال بمصدر الأسعار؛ تحقق من العنوان والصلاحيات");
-  feed.onclose=()=>{if(feed)setFeedStatus("انقطع اتصال مصدر OTC");};
- }catch(e){setFeedStatus("تعذر إنشاء اتصال WebSocket");}
+  const socket=new WebSocket(url);feed=socket;setFeedStatus("جارٍ الاتصال بمصدر الأسعار...");
+  socket.onopen=()=>{
+   if(feed!==socket)return;
+   const msg=$("subscribeMessage").value.trim();
+   if(msg){try{socket.send(msg)}catch(e){setFeedStatus("اتصل WebSocket لكن تعذر إرسال رسالة الاشتراك");return}}
+   setFeedStatus(msg?"اتصال قائم — أُرسلت رسالة الاشتراك":"اتصال قائم — لم تُرسل رسالة اشتراك؛ تحقق من بروتوكول المزود",true);
+  };
+  socket.onmessage=e=>{if(feed!==socket)return;unpack(e.data).forEach(acceptQuote)};
+  socket.onerror=()=>{if(feed===socket)setFeedStatus("تعذر الاتصال؛ تحقق من عنوان المزود ودعم WebSocket عبر المتصفح")};
+  socket.onclose=()=>{if(feed===socket){feed=null;setFeedStatus("انقطع اتصال مصدر الأسعار");resetDisplay()}};
+ }catch(e){feed=null;setFeedStatus("تعذر إنشاء اتصال WebSocket")}
 }
-function disconnectFeed(){if(feed){feed.close();feed=null;}setFeedStatus("غير متصل بمصدر OTC");}
-function ema(data,period){
- const k=2/(period+1);let v=data[0];
- for(let i=1;i<data.length;i++)v=data[i]*k+v*(1-k);
- return v;
+function disconnectFeed(){if(feed){const s=feed;feed=null;s.close()}setFeedStatus("تم قطع اتصال مصدر الأسعار");resetDisplay()}
+function ema(data,n){if(data.length<n)return null;const k=2/(n+1);let v=data[0];for(let i=1;i<data.length;i++)v=data[i]*k+v*(1-k);return v}
+function rsi(data,n=7){
+ if(data.length<n+1)return null;let gains=0,losses=0;
+ for(let i=data.length-n;i<data.length;i++){const d=data[i]-data[i-1];if(d>0)gains+=d;else losses-=d}
+ if(losses===0)return gains===0?50:100;return 100-100/(1+gains/losses)
 }
-function rsi(data,period=7){
- let gains=0,losses=0;
- for(let i=data.length-period;i<data.length;i++){
-  const d=data[i]-data[i-1];if(d>0)gains+=d;else losses-=d;
- }
- if(losses===0)return gains===0?50:100;
- return 100-(100/(1+gains/losses));
-}
-function fmt(v){
- const n=$("asset").value;
- return v.toFixed(["EURUSD","GBPUSD","USDCHF","AUDUSD"].includes(n)?5:
- n==="USDJPY"?3:n==="Gold"||n==="Silver"||n==="Brent"?3:2);
-}
-function valueAtOrBefore(asset,ms){
- const path=priceSnapshots[asset]||[],target=Date.now()-ms;
+function priceAtOrBefore(path,ms){
+ const target=Date.now()-ms;
  for(let i=path.length-1;i>=0;i--)if(path[i].receivedAt<=target)return path[i].price;
  return null;
 }
 function analyze(){
- const asset=$("asset").value,now=Date.now(),path=priceSnapshots[asset]||[];
- if(!path.length||now-lastFeedAt>MAX_TICK_AGE_MS){
-  $("signal").textContent="WAIT — انتظار";
-  $("signal").className="signal wait";
-  $("reason").textContent="لا توجد بيانات OTC حديثة؛ تم تعطيل الإشارات";
-  $("strength").textContent="0%";
-  $("trend").textContent="غير متاح";
-  $("momentum").textContent="غير متاح";
-  $("runStatus").textContent="بانتظار سعر OTC حديث";
-  return;
- }
- const e5=ema(prices.slice(-30),5),e13=ema(prices.slice(-40),13),rv=rsi(prices,7);
- const p5=valueAtOrBefore(asset,5000),p15=valueAtOrBefore(asset,15000),p30=valueAtOrBefore(asset,30000);
- const ready=p5!==null&&p15!==null&&p30!==null;
- const m5=ready?current-p5:null,m15=ready?current-p15:null,m30=ready?current-p30:null;
- const up=ready&&e5>e13&&m5>0&&m15>0&&m30>0;
- const down=ready&&e5<e13&&m5<0&&m15<0&&m30<0;
- const aligned=up||down;
- const rsiOK=up?(rv>=52&&rv<=70):(down?(rv>=30&&rv<=48):false);
- const sig=aligned&&rsiOK?(up?"CALL":"PUT"):"WAIT";
- const agreement=aligned&&rsiOK?94:0;
- $("price").textContent=fmt(current);$("ema5").textContent=fmt(e5);$("ema13").textContent=fmt(e13);
- $("rsi").textContent=rv.toFixed(1);
- $("momentum").textContent=!ready?"بانتظار 30 ثانية":up?"إيجابي على 3 فترات":down?"سلبي على 3 فترات":"متعارض";
- $("trend").textContent=up?"صاعد":down?"هابط":"غير مؤكد";
+ const a=selectedAsset(),path=priceSnapshots[a]||[],now=Date.now(),last=lastFeedAtByAsset[a]||0;
+ if(!path.length||now-last>MAX_TICK_AGE_MS){resetDisplay();$("reason").textContent="لا توجد قراءة حديثة خلال 15 ثانية؛ الإشارات متوقفة";return}
+ loadAssetBuffer();
+ if(prices.length<MIN_POINTS){$("reason").textContent="نجمع "+MIN_POINTS+" قراءات صالحة قبل حساب المؤشرات ("+prices.length+"/"+MIN_POINTS+")";$("signal").textContent="WAIT — انتظار";$("signal").className="signal wait";$("strength").textContent="—";return}
+ const e5=ema(prices.slice(-60),5),e13=ema(prices.slice(-60),13),rv=rsi(prices,7);
+ const p5=priceAtOrBefore(path,5000),p15=priceAtOrBefore(path,15000),p30=priceAtOrBefore(path,30000);
+ const ready=[p5,p15,p30].every(x=>x!==null&&Number.isFinite(x));
+ const deltas=ready?[current-p5,current-p15,current-p30]:[];
+ const dirs=ready?deltas.map(x=>Math.sign(x)):[];
+ const up=ready&&e5>e13&&dirs.every(x=>x===1);
+ const down=ready&&e5<e13&&dirs.every(x=>x===-1);
+ const rsiOK=up?rv>=52&&rv<=70:down?rv>=30&&rv<=48:false;
+ const sig=up&&rsiOK?"CALL":down&&rsiOK?"PUT":"WAIT";
+ const emaOK=e5!==null&&e13!==null&&e5!==e13;
+ const emaPoints=emaOK?25:0,momentumPoints=ready?dirs.filter(x=>x===(e5>e13?1:-1)).length*15:0;
+ const rsiPoints=rsiOK?15:0,freshPoints=now-last<=5000?10:now-last<=10000?7:4;
+ const strength=Math.min(100,emaPoints+momentumPoints+rsiPoints+freshPoints);
+ $("ema5").textContent=fmt(e5);$("ema13").textContent=fmt(e13);$("rsi").textContent=rv.toFixed(1);
+ $("momentum").textContent=!ready?"بانتظار 30 ثانية":deltas.map((d,i)=>([5,15,30][i])+"ث "+(d>0?"+":"")+((d/(i===0?p5:i===1?p15:p30))*100).toFixed(3)+"%").join(" | ");
+ $("trend").textContent=up?"صاعد":down?"هابط":"غير متوافق";
  $("signal").textContent=sig==="CALL"?"CALL — صعود":sig==="PUT"?"PUT — هبوط":"WAIT — انتظار";
- $("signal").className="signal "+sig.toLowerCase();
- $("strength").textContent=agreement+"%";
- $("reason").textContent=!ready?"نجمع بيانات OTC لمدة 30 ثانية قبل إصدار الإشارة":!aligned?"اتجاه الزخم على 5 و15 و30 ثانية غير متوافق":!rsiOK?"RSI لا يؤكد اتجاه الزخم":"توافق EMA والزخم متعدد الفترات وRSI؛ بانتظار التأكيد الثاني";
- $("updated").textContent="آخر تحديث: "+new Date(lastFeedAt).toLocaleTimeString("ar-SA");
- if(sig==="WAIT"){pendingSignal=null;pendingCount=0;}
+ $("signal").className="signal "+sig.toLowerCase();$("strength").textContent=strength+"%";
+ $("reason").textContent=!ready?"نجمع بيانات 30 ثانية":!emaOK?"تقارب EMA لا يسمح بتحديد اتجاه":!up&&!down?"الزخم على 5 و15 و30 ثانية لا يتفق مع EMA":!rsiOK?"RSI لا يؤكد الاتجاه؛ تم إيقاف الإشارة":"اتجاه EMA والزخم وRSI متوافق؛ التأكيد يحسب على قراءة جديدة فقط";
+ $("updated").textContent="آخر تحديث: "+new Date(last).toLocaleTimeString("ar-SA");
+ if(sig==="WAIT"){pendingByAsset[a]=null}
  else{
-  if(pendingSignal===sig)pendingCount++;else{pendingSignal=sig;pendingCount=1;}
-  if(pendingCount>=2&&now-lastSignalAt>=COOLDOWN_MS){addSignal(sig,agreement);lastSignalAt=now;pendingCount=0;}
+  const previous=lastAnalyzedQuoteByAsset[a]||0;
+  const quoteId=path[path.length-1].providerTime;
+  if(quoteId>previous){
+   const pending=pendingByAsset[a];
+   const count=pending&&pending.signal===sig?pending.count+1:1;
+   pendingByAsset[a]={signal:sig,count};lastAnalyzedQuoteByAsset[a]=quoteId;
+   if(count>=2&&now-(lastSignalAtByAsset[a]||0)>=COOLDOWN_MS){addSignal(sig,strength);lastSignalAtByAsset[a]=now;pendingByAsset[a]={signal:sig,count:0}}
+  }
  }
  evaluateSignals();render();
 }
-function addSignal(sig,strength){
- const asset=$("asset").value;
- history.unshift({asset,signal:sig,strength,time:Date.now(),entryPrice:current,result5:null,result30:null});
- if(history.length>500)history.pop();
-}
+function addSignal(sig,strength){const a=selectedAsset();history.unshift({asset:a,signal:sig,strength,time:Date.now(),entryPrice:current,result5:null,result30:null});if(history.length>500)history.pop()}
 function evaluateSignals(){
  history.forEach(x=>{
   const path=priceSnapshots[x.asset]||[];
   for(const seconds of [5,30]){
-   const key=seconds===5?"result5":"result30";
-   if(x[key]!==null)continue;
-   const point=path.find(p=>p.time>=x.time+seconds*1000);
-   if(!point)continue;
+   const key=seconds===5?"result5":"result30";if(x[key]!==null)continue;
+   const point=path.find(p=>p.receivedAt>=x.time+seconds*1000);if(!point)continue;
    if(point.price===x.entryPrice)x[key]="تعادل";
-   else {
-    const won=x.signal==="CALL"?point.price>x.entryPrice:point.price<x.entryPrice;
-    x[key]=won?"ناجحة":"خاسرة";
-   }
+   else x[key]=(x.signal==="CALL"?point.price>x.entryPrice:point.price<x.entryPrice)?"ناجحة":"خاسرة";
   }
  });
 }
 function render(){
- $("total").textContent=history.length;
- $("calls").textContent=history.filter(x=>x.signal==="CALL").length;
- $("puts").textContent=history.filter(x=>x.signal==="PUT").length;
- const stats=key=>{
-  const completed=history.filter(x=>x[key]!==null);
-  const decisive=completed.filter(x=>x[key]==="ناجحة"||x[key]==="خاسرة");
-  const wins=decisive.filter(x=>x[key]==="ناجحة").length;
-  const losses=decisive.length-wins;
-  const ties=completed.filter(x=>x[key]==="تعادل").length;
-  return {wins,losses,ties,completed:completed.length,rate:decisive.length>=20?(wins/decisive.length*100).toFixed(1)+"%":"عينة غير كافية"};
- };
+ $("total").textContent=history.length;$("calls").textContent=history.filter(x=>x.signal==="CALL").length;$("puts").textContent=history.filter(x=>x.signal==="PUT").length;
+ const stats=key=>{const done=history.filter(x=>x[key]!==null),dec=done.filter(x=>x[key]==="ناجحة"||x[key]==="خاسرة"),wins=dec.filter(x=>x[key]==="ناجحة").length,losses=dec.length-wins,ties=done.length-dec.length;return{wins,losses,ties,completed:done.length,rate:dec.length>=20?(wins/dec.length*100).toFixed(1)+"%":"عينة غير كافية"}};
  const a=stats("result5"),b=stats("result30");
- $("win5").textContent=a.wins;$("loss5").textContent=a.losses;$("rate5").textContent=a.rate;
- $("win30").textContent=b.wins;$("loss30").textContent=b.losses;$("rate30").textContent=b.rate;
- $("win5").title="نتائج مكتملة: "+a.completed+" | تعادل: "+a.ties;
- $("win30").title="نتائج مكتملة: "+b.completed+" | تعادل: "+b.ties;
- $("history").innerHTML=history.length?history.slice(0,40).map(x=>
-  '<div class="row"><span>'+x.asset+' · '+x.signal+'<br><small>5 ث: '+(x.result5||"قيد الانتظار")+' | 30 ث: '+(x.result30||"قيد الانتظار")+'</small></span><span>'+x.strength+'% · '+new Date(x.time).toLocaleTimeString("ar-SA")+'</span></div>'
- ).join(""):'<p class="muted">لا توجد إشارات مسجلة بعد</p>';
+ $("win5").textContent=a.wins;$("loss5").textContent=a.losses;$("rate5").textContent=a.rate;$("win30").textContent=b.wins;$("loss30").textContent=b.losses;$("rate30").textContent=b.rate;
+ $("win5").title="نتائج مكتملة: "+a.completed+" | تعادل: "+a.ties;$("win30").title="نتائج مكتملة: "+b.completed+" | تعادل: "+b.ties;
+ $("history").innerHTML=history.length?history.slice(0,40).map(x=>'<div class="row"><span>'+x.asset+' · '+x.signal+'<br><small>5 ث: '+(x.result5||"قيد الانتظار")+' | 30 ث: '+(x.result30||"قيد الانتظار")+'</small></span><span>'+x.strength+'% · '+new Date(x.time).toLocaleTimeString("ar-SA")+'</span></div>').join(""):'<p class="muted">لا توجد إشارات مسجلة بعد</p>';
 }
-function setRunState(running){
- $("runStatus").textContent=running?"المحاكاة تعمل — تحديث كل 5 ثوانٍ":"المحاكاة متوقفة";
- $("runStatus").style.color=running?"#42df9b":"#ffd477";
- $("start").textContent=running?"المحاكاة تعمل":"بدء المحاكاة";
- $("start").disabled=running;
-}
-$("asset").onchange=()=>{seed();analyze()};
-$("connect").onclick=connectFeed;
-$("disconnect").onclick=disconnectFeed;
-$("once").onclick=()=>analyze();
-$("start").onclick=()=>{
- if(timer)return;
- analyze();
- timer=setInterval(analyze,5000);
- setRunState(true);
-};
-$("stop").onclick=()=>{
- if(timer){clearInterval(timer);timer=null;}
- setRunState(false);
-};
+function setRunState(running){$("runStatus").textContent=running?"المحاكاة تعمل — تحليل كل 5 ثوانٍ":"المحاكاة متوقفة";$("runStatus").style.color=running?"#42df9b":"#ffd477";$("start").textContent=running?"المحاكاة تعمل":"بدء المحاكاة";$("start").disabled=running}
+$("asset").onchange=()=>{resetDisplay();loadAssetBuffer();analyze()};
+$("connect").onclick=connectFeed;$("disconnect").onclick=disconnectFeed;$("once").onclick=analyze;
+$("start").onclick=()=>{if(timer)return;if(!feed||feed.readyState!==WebSocket.OPEN){$("runStatus").textContent="اتصل بمصدر الأسعار أولاً";return}if(!lastFeedAtByAsset[selectedAsset()]||Date.now()-lastFeedAtByAsset[selectedAsset()]>MAX_TICK_AGE_MS){$("runStatus").textContent="لا توجد قراءة حديثة للأصل المختار";return}analyze();timer=setInterval(analyze,5000);setRunState(true)};
+$("stop").onclick=()=>{if(timer){clearInterval(timer);timer=null}setRunState(false)};
 $("clear").onclick=()=>{history=[];render()};
-$("export").onclick=()=>{
- const rows=["Asset,Signal,Strength,EntryPrice,Result_5s,Result_30s,Time",
- ...history.map(x=>[x.asset,x.signal,x.strength,x.entryPrice,x.result5||"Pending",x.result30||"Pending",new Date(x.time).toISOString()].join(","))];
- const blob=new Blob(["\uFEFF"+rows.join("\n")],{type:"text/csv;charset=utf-8"});
- const a=document.createElement("a");a.href=URL.createObjectURL(blob);
- a.download="expertoption-demo-signals.csv";a.click();URL.revokeObjectURL(a.href);
-};
+$("export").onclick=()=>{const rows=["Asset,Signal,Strength,EntryPrice,Result_5s,Result_30s,Time",...history.map(x=>[x.asset,x.signal,x.strength,x.entryPrice,x.result5||"Pending",x.result30||"Pending",new Date(x.time).toISOString()].join(","))];const blob=new Blob(["\uFEFF"+rows.join("\n")],{type:"text/csv;charset=utf-8"});const a=document.createElement("a");const u=URL.createObjectURL(blob);a.href=u;a.download="expertoption-demo-signals.csv";a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)};
 try{$("feedUrl").value=localStorage.getItem("expertoption_otc_ws")||""}catch{}
-seed();analyze();setRunState(false);
+resetDisplay();loadAssetBuffer();render();setRunState(false);
 </script>
 </body>
 </html>
