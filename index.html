@@ -46,7 +46,7 @@ footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
 <div class="sub">محرك التحليل الفني — إصدار الفلترة والتأكيد</div>
 </header>
 <main>
-<div class="notice">وضع OTC: لا يتم توليد أسعار تجريبية. المحرك لا يصدر إشارات إلا بعد استقبال سعر من مصدر OTC خارجي والتحقق من الأصل وحداثة البيانات. لا توجد صفقات حقيقية.</div>
+<div class="notice">وضع OTC: لا يتم توليد أسعار تجريبية. المحرك لا يصدر إشارات إلا بعد استقبال سعر حديث من مصدر خارجي والتحقق من الرمز والتوقيت. اتصال WebSocket لا يثبت وحده أن الأسعار OTC أو مطابقة للمنصة. لا توجد صفقات حقيقية.</div>
 
 <section class="panel">
 <label>مصدر أسعار OTC (WebSocket)</label>
@@ -74,7 +74,7 @@ footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
 <option value="SPX500">SPX500</option>
 <option value="DAX40">DAX40</option>
 </select>
-<div class="muted">السعر التجريبي الحالي</div>
+<div class="muted">آخر سعر وارد من المصدر</div>
 <div class="price" id="price">—</div>
 <div class="muted" id="updated">بانتظار بدء المحاكاة</div>
 </section>
