@@ -144,13 +144,13 @@ const instruments=[
  {asset:"DAX40",label:"DAX 40",symbol:"DAX",aliases:["DAX","DAX40","GER40"]}
 ];
 const instrumentByAlias={};instruments.forEach(x=>x.aliases.concat([x.symbol]).forEach(k=>instrumentByAlias[norm(k)]=x));
-let feed=null,timer=null,heartbeat=null,watchdog=null,freshnessTimer=null,history=[],priceSnapshots={},lastFeedAtByAsset={},lastSignalAtByAsset={},pendingByAsset={},lastAnalyzedQuoteByAsset={},marketStates={};
+let feed=null,timer=null,heartbeat=null,watchdog=null,freshnessTimer=null,history=[],priceSnapshots={},lastFeedAtByAsset={},lastSignalAtByAsset={},pendingByAsset={},lastAnalyzedQuoteByAsset={},marketStates={},marketDetails={};
 let current=0,prices=[],lastFeedAt=0;
 function norm(v){return String(v??"").trim().toUpperCase().replace(/[^A-Z0-9]/g,"")}
 function selectedAsset(){return $("asset").value}
 function setFeedStatus(msg,ok=false){$("feedStatus").textContent=msg;$("feedStatus").style.color=ok?"#42df9b":"#ffd477"}
 function renderMarkets(){
- $("marketStatus").innerHTML=instruments.map(x=>{const st=marketStates[x.asset]||"لم يُفحص";const color=st==="يصل سعر مباشر"?"#42df9b":st==="متاح — بانتظار أول سعر"?"#ffd477":st==="غير متاح من الخطة/الرمز"?"#ff8585":"#aabbd2";return '<div style="display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #26364d"><span>'+x.label+' ('+x.symbol+')</span><b style="color:'+color+'">'+st+'</b></div>'}).join("");
+ $("marketStatus").innerHTML=instruments.map(x=>{const st=marketStates[x.asset]||"لم يُفحص";const color=st==="يصل سعر مباشر"?"#42df9b":st==="متاح — بانتظار أول سعر"?"#ffd477":st.includes("قديم")||st.includes("غير متاح")?"#ff8585":"#aabbd2";const detail=marketDetails[x.asset]||"";return '<div style="display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #26364d;padding:4px 0"><span>'+x.label+' ('+x.symbol+')</span><b style="color:'+color+';text-align:left">'+st+(detail?'<br><small style="font-weight:400;color:#9eafc8">'+detail+'</small>':'')+'</b></div>'}).join("");
 }
 function fmt(v){const a=selectedAsset();return Number(v).toFixed(["EURUSD","GBPUSD","USDCHF","AUDUSD"].includes(a)?5:a==="USDJPY"?3:["Gold","Silver","Brent"].includes(a)?3:2)}
 function resetDisplay(){current=0;prices=[];$("price").textContent="—";$("updated").textContent="بانتظار بيانات الأصل المختار";$("ema5").textContent="—";$("ema13").textContent="—";$("rsi").textContent="—";$("momentum").textContent="—";$("trend").textContent="—";$("signal").textContent="WAIT — انتظار";$("signal").className="signal wait";$("strength").textContent="—";$("reason").textContent="بانتظار سعر حديث مطابق وحديث";$("runStatus").textContent="بانتظار بيانات المصدر"}
@@ -160,21 +160,24 @@ function unpack(raw){let root;try{root=JSON.parse(raw)}catch{return []}const out
 function acceptQuote(q){
  const instrument=instrumentByAlias[q.symbol];if(!instrument)return;
  const a=instrument.asset,now=Date.now();
- if(q.stale||q.marketState==="closed"){marketStates[a]="السوق مغلق";renderMarkets();return}
- if(!Number.isFinite(q.time)||q.time>now+10000||now-q.time>MAX_TICK_AGE_MS){marketStates[a]="وصلت قراءة قديمة";renderMarkets();return}
+ if(q.stale||q.marketState==="closed"){marketStates[a]="السوق مغلق";marketDetails[a]=q.marketState||"المزود وضع علامة stale";renderMarkets();return}
+ if(!Number.isFinite(q.time)||q.time>now+10000){marketStates[a]="توقيت غير صالح";marketDetails[a]="تحقق من timestamp الوارد من المزود";renderMarkets();return}
+ const ageMs=now-q.time;
+ if(ageMs>MAX_TICK_AGE_MS){marketStates[a]="وصلت قراءة قديمة";marketDetails[a]="عمر آخر قراءة: "+Math.round(ageMs/1000)+" ثانية — لا تستخدم للتحليل";renderMarkets();return}
  const path=priceSnapshots[a]||[];
  if(path.length&&(q.time<path[path.length-1].providerTime||(q.time===path[path.length-1].providerTime&&q.price===path[path.length-1].price)))return;
  const point={time:now,receivedAt:now,providerTime:q.time,price:q.price};path.push(point);while(path.length>1500||path.length&&now-path[0].receivedAt>300000)path.shift();
- priceSnapshots[a]=path;lastFeedAtByAsset[a]=now;marketStates[a]="يصل سعر مباشر";renderMarkets();
+ priceSnapshots[a]=path;lastFeedAtByAsset[a]=now;marketStates[a]="يصل سعر مباشر";marketDetails[a]="آخر تحديث من المزود: "+Math.max(0,Math.round(ageMs/1000))+" ث";renderMarkets();
  if(a===selectedAsset()){loadAssetBuffer();$("price").textContent=fmt(current);$("updated").textContent="آخر قراءة: "+new Date(q.time).toLocaleTimeString("ar-SA");setFeedStatus("اتصال قائم — الأسعار من السوق الحقيقي وليست OTC",true)}
 }
 function handleMessage(raw){
- let msg;try{msg=JSON.parse(raw)}catch{return}
+ let msg;try{msg=JSON.parse(raw)}catch{setFeedStatus("وصلت رسالة غير مفهومة من المزود");return}
+ if(msg.event==="heartbeat")return;
  if(msg.event==="error"||msg.status==="error"){setFeedStatus("رسالة خطأ من المزود: "+(msg.message||msg.code||"تحقق من المفتاح والخطة"));return}
  if(msg.event==="subscribe-status"||msg.event==="status"){
   const success=msg.success||msg.subscribed||[],fails=msg.fails||msg.failed||[];
-  success.forEach(x=>{const item=instrumentByAlias[norm(x.symbol)];if(item&&marketStates[item.asset]!=="يصل سعر مباشر")marketStates[item.asset]="متاح — بانتظار أول سعر"});
-  fails.forEach(x=>{const item=instrumentByAlias[norm(x.symbol)];if(item)marketStates[item.asset]="غير متاح من الخطة/الرمز"});
+  success.forEach(x=>{const item=instrumentByAlias[norm(typeof x==="string"?x:x.symbol)];if(item&&marketStates[item.asset]!=="يصل سعر مباشر"){marketStates[item.asset]="متاح — بانتظار أول سعر";marketDetails[item.asset]="قبِل المزود الاشتراك؛ ننتظر event price"}});
+  fails.forEach(x=>{const item=instrumentByAlias[norm(typeof x==="string"?x:x.symbol)];if(item){marketStates[item.asset]="غير متاح من الخطة/الرمز";marketDetails[item.asset]=typeof x==="string"?"رفض الرمز":(x.message||x.code||x.reason||"رفض الاشتراك")}});
   if(msg.status==="error"||msg.code){setFeedStatus("رفض المزود الاشتراك: "+(msg.message||msg.code||"تحقق من الخطة والرموز"))}
   renderMarkets();return;
  }
@@ -186,7 +189,7 @@ function connectFeed(){
  Object.keys(marketStates).forEach(k=>marketStates[k]="جارٍ فحص الاشتراك");renderMarkets();
  try{
   const socket=new WebSocket("wss://ws.twelvedata.com/v1/quotes/price?apikey="+encodeURIComponent(key));feed=socket;setFeedStatus("جارٍ الاتصال بـ Twelve Data...");
-  socket.onopen=()=>{if(feed!==socket)return;const symbols=instruments.map(x=>x.symbol).join(",");socket.send(JSON.stringify({action:"subscribe",params:{symbols}}));setFeedStatus("اتصل WebSocket — أُرسل طلب فحص الرموز؛ ننتظر قبول المزود",true);if(heartbeat)clearInterval(heartbeat);heartbeat=setInterval(()=>{if(feed===socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({action:"heartbeat"}))},10000);if(watchdog)clearTimeout(watchdog);watchdog=setTimeout(()=>{instruments.forEach(x=>{if(marketStates[x.asset]==="جارٍ فحص الاشتراك"||marketStates[x.asset]==="متاح — بانتظار أول سعر")marketStates[x.asset]="لم يصل سعر — تحقق من الرمز/الخطة"});renderMarkets()},15000);if(freshnessTimer)clearInterval(freshnessTimer);freshnessTimer=setInterval(()=>{const now=Date.now();instruments.forEach(x=>{if(marketStates[x.asset]==="يصل سعر مباشر"&&now-(lastFeedAtByAsset[x.asset]||0)>MAX_TICK_AGE_MS)marketStates[x.asset]="السعر قديم — أوقف الإشارة"});renderMarkets()},5000)};
+  socket.onopen=()=>{if(feed!==socket)return;const symbols=instruments.map(x=>x.symbol).join(",");socket.send(JSON.stringify({action:"subscribe",params:{symbols}}));setFeedStatus("اتصل WebSocket — أُرسل طلب فحص الرموز؛ ننتظر قبول المزود",true);if(heartbeat)clearInterval(heartbeat);heartbeat=setInterval(()=>{if(feed===socket&&socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({action:"heartbeat"}))},10000);if(watchdog)clearTimeout(watchdog);watchdog=setTimeout(()=>{instruments.forEach(x=>{if(marketStates[x.asset]==="جارٍ فحص الاشتراك"||marketStates[x.asset]==="متاح — بانتظار أول سعر")marketStates[x.asset]="لم يصل سعر — تحقق من الرمز/الخطة"});renderMarkets()},15000);if(freshnessTimer)clearInterval(freshnessTimer);freshnessTimer=setInterval(()=>{const now=Date.now();instruments.forEach(x=>{if(marketStates[x.asset]==="يصل سعر مباشر"&&now-(lastFeedAtByAsset[x.asset]||0)>MAX_TICK_AGE_MS){marketStates[x.asset]="السعر قديم — أوقف الإشارة";marketDetails[x.asset]="لم يصل تحديث خلال "+Math.round((now-(lastFeedAtByAsset[x.asset]||0))/1000)+" ثانية"}});renderMarkets()},5000)};
   socket.onmessage=e=>{if(feed===socket)handleMessage(e.data)};
   socket.onerror=()=>{if(feed===socket)setFeedStatus("تعذر الاتصال؛ تحقق من المفتاح والخطة والاتصال")};
   socket.onclose=()=>{if(feed===socket){feed=null;if(heartbeat)clearInterval(heartbeat);if(freshnessTimer)clearInterval(freshnessTimer);setFeedStatus("انقطع اتصال Twelve Data");if(timer){clearInterval(timer);timer=null}resetDisplay()}};
