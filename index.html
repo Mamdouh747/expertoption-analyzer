@@ -109,7 +109,7 @@ footer{text-align:center;color:#8193ad;font-size:11px;padding:20px}
 <div class="metric"><span>خاسرة</span><b id="loss30">0</b></div>
 <div class="metric"><span>نسبة النجاح</span><b id="rate30">—</b></div>
 </div>
-<div class="small">تُقاس النتيجة من حركة السعر التجريبي المسجلة بعد كل مدة. هذه محاكاة وليست أسعار المنصة.</div>
+<div class="small">تُقاس النتيجة من حركة السعر التجريبي بعد اكتمال المدة. لا تُعرض نسبة نجاح موثوقة قبل توفر 20 نتيجة مكتملة على الأقل لكل مدة. التعادلات لا تدخل في حساب النسبة. هذه محاكاة وليست أسعار المنصة.</div>
 <div class="history" id="history"><p class="muted">لا توجد إشارات مسجلة بعد</p></div>
 <div class="actions">
 <button class="secondary" id="export">تصدير CSV</button>
@@ -220,13 +220,18 @@ function render(){
  $("calls").textContent=history.filter(x=>x.signal==="CALL").length;
  $("puts").textContent=history.filter(x=>x.signal==="PUT").length;
  const stats=key=>{
-  const done=history.filter(x=>x[key]==="ناجحة"||x[key]==="خاسرة");
-  const wins=done.filter(x=>x[key]==="ناجحة").length;
-  return {wins,losses:done.length-wins,rate:done.length?(wins/done.length*100).toFixed(1)+"%":"—"};
+  const completed=history.filter(x=>x[key]!==null);
+  const decisive=completed.filter(x=>x[key]==="ناجحة"||x[key]==="خاسرة");
+  const wins=decisive.filter(x=>x[key]==="ناجحة").length;
+  const losses=decisive.length-wins;
+  const ties=completed.filter(x=>x[key]==="تعادل").length;
+  return {wins,losses,ties,completed:completed.length,rate:decisive.length>=20?(wins/decisive.length*100).toFixed(1)+"%":"عينة غير كافية"};
  };
  const a=stats("result5"),b=stats("result30");
  $("win5").textContent=a.wins;$("loss5").textContent=a.losses;$("rate5").textContent=a.rate;
  $("win30").textContent=b.wins;$("loss30").textContent=b.losses;$("rate30").textContent=b.rate;
+ $("win5").title="نتائج مكتملة: "+a.completed+" | تعادل: "+a.ties;
+ $("win30").title="نتائج مكتملة: "+b.completed+" | تعادل: "+b.ties;
  $("history").innerHTML=history.length?history.slice(0,40).map(x=>
   '<div class="row"><span>'+x.asset+' · '+x.signal+'<br><small>5 ث: '+(x.result5||"قيد الانتظار")+' | 30 ث: '+(x.result30||"قيد الانتظار")+'</small></span><span>'+x.strength+'% · '+new Date(x.time).toLocaleTimeString("ar-SA")+'</span></div>'
  ).join(""):'<p class="muted">لا توجد إشارات مسجلة بعد</p>';
